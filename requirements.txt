@@ -1,0 +1,4 @@
+# pr0xywall - Layer 7 Proxy Firewall
+# No external dependencies required - uses Python standard library only
+
+# Python 3.10+ required
