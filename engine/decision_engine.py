@@ -16,12 +16,16 @@ try:
     from parser.request_parser import Request
     from rules.rules import RuleSet
     from ratelimit.limiter import RateLimiter
+    from engine.normalizer import Normalizer
+    from engine.scoring_engine import ScoringEngine
 except ImportError:
     import sys
     sys.path.insert(0, '..')
     from parser.request_parser import Request
     from rules.rules import RuleSet
     from ratelimit.limiter import RateLimiter
+    from engine.normalizer import Normalizer
+    from engine.scoring_engine import ScoringEngine
 
 
 class Decision(Enum):
@@ -96,20 +100,21 @@ class DecisionEngine:
             from ratelimit.limiter import RateLimiter
             self.rate_limiter = RateLimiter()
     
+    def _print_detailed_output(self, raw_tuple, norm_tuple, matched_rules, attack_reasons, total_score, decision_str):
+        print("\n" + "="*50)
+        print("🔍 DETAILED CONSOLE OUTPUT 🔍")
+        print("="*50)
+        print(f"1. EXTRACTED TUPLE:\n   Method: {raw_tuple[0]}\n   Path: {raw_tuple[1]}")
+        print(f"2. NORMALIZED FIELDS:\n   Method: {norm_tuple[0]}\n   Path: {norm_tuple[1]}\n   Body: {norm_tuple[3]}")
+        print(f"3. MATCHED RULES: {', '.join(matched_rules) if matched_rules else 'None'}")
+        print(f"4. ATTACK REASONS: {', '.join(attack_reasons) if attack_reasons else 'None'}")
+        print(f"5. TOTAL SCORE: {total_score}")
+        print(f"6. FINAL DECISION: {decision_str}")
+        print("="*50 + "\n")
+
     def evaluate(self, request: Request) -> DecisionResult:
         """
         Evaluate a request and return decision.
-        
-        Evaluation order:
-        1. Check rate limiting (if enabled)
-        2. Evaluate security rules
-        3. Combine results and return decision
-        
-        Args:
-            request: The HTTP request to evaluate
-            
-        Returns:
-            DecisionResult with decision and metadata
         """
         # Step 1: Check rate limiting first
         if self.enable_rate_limiting and self.rate_limiter:
@@ -125,29 +130,47 @@ class DecisionEngine:
                     rate_limited=True
                 )
         
-        # Step 2: Evaluate security rules
-        should_block, score, reasons = self.rule_set.evaluate(request)
+        # Extract tuple
+        raw_tuple = (request.method, request.path, request.headers, request.body)
+        
+        # Normalize
+        norm_tuple = Normalizer.normalize_tuple(raw_tuple)
+        
+        # Scoring Engine Explicit Detectors
+        detector_score, detector_reasons = ScoringEngine.evaluate(norm_tuple)
+        
+        # Existing Rules evaluation
+        rule_block, rule_score, rule_reasons = self.rule_set.evaluate(request)
+        
+        total_score = detector_score + rule_score
+        all_reasons = detector_reasons + rule_reasons
+        
+        decision_str = "BLOCK" if total_score >= self.rule_set.score_threshold else "ALLOW"
+        
+        # Console output
+        self._print_detailed_output(
+            raw_tuple, norm_tuple, rule_reasons, detector_reasons, total_score, decision_str
+        )
         
         # Step 3: Make final decision
-        if should_block:
-            # Combine all reasons
-            if len(reasons) == 1:
-                reason = reasons[0]
+        if total_score >= self.rule_set.score_threshold:
+            if len(all_reasons) == 1:
+                reason = all_reasons[0]
             else:
-                reason = f"Multiple threats detected: {'; '.join(reasons[:3])}"
+                reason = f"Multiple threats detected: {'; '.join(all_reasons[:3])}"
             
             return DecisionResult(
                 decision=Decision.BLOCK,
                 reason=reason,
-                score=score,
+                score=total_score,
                 rate_limited=False,
-                rule_matches=reasons
+                rule_matches=all_reasons
             )
         
         return DecisionResult(
             decision=Decision.ALLOW,
             reason="Request passed all checks",
-            score=score,
+            score=total_score,
             rate_limited=False
         )
     
